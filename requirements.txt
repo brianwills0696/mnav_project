@@ -1,0 +1,8 @@
+streamlit
+requests
+pandas
+plotly
+yfinance
+beautifulsoup4
+streamlit-autorefresh
+openai>=1.0.0
