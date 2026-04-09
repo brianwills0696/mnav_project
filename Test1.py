@@ -4,216 +4,186 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
-from datetime import datetime
 
 # =========================
-# 0. Streamlit 設定 + Cache
-# =========================
-st.set_page_config(page_title="BTC & MSTR mNAV Dashboard", layout="wide")
-
-@st.cache_data(ttl=3600)
-def get_btc_data():
-    # Binance API: 獲取 BTCUSDT 數據
-    symbol = "BTCUSDT"
-    interval = "1h"  # 如果你想要像圖片中顯示每小時的數據，用 1h；如果是日線用 1d
-    limit = 90
-    
-    klines_url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    
-    try:
-        response = requests.get(klines_url, timeout=10)
-        data = response.json()
-        
-        # 1. 建立原始 DataFrame
-        df = pd.DataFrame(data, columns=[
-            "timestamp", "open", "high", "low", "close", "volume",
-            "close_time", "qav", "trades", "tbbav", "tbqav", "ignore"
-        ])
-        
-        # 2. 轉換數值格式
-        df["price"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-        
-        # 3. 處理時間
-        df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
-        
-        # ✨ 關鍵修改：只保留你需要的欄位
-        # 我們保留 date 是為了設為索引，保留 price 和 volume 是為了顯示與計算
-        df = df[["date", "price", "volume"]]
-        
-        # 4. 設定索引並移除時區
-        df.set_index("date", inplace=True)
-        df.index = df.index.tz_localize(None)
-        
-        return df
-    except Exception as e:
-        st.error(f"Binance API 擷取失敗: {e}")
-        return None
-    
-@st.cache_data(ttl=3600)
-def get_mstr_data():
-    ticker = yf.Ticker("MSTR")
-    shares = ticker.info.get("sharesOutstanding", 345000000)
-
-    hist = ticker.history(period="90d")["Close"]
-    hist.index = hist.index.tz_localize(None)
-
-    return shares, hist
-
-@st.cache_data(ttl=3600)
-def get_mstr_btc_holdings():
-    url = "https://bitbo.io/treasuries/microstrategy/"
-    try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        import re
-        text = soup.get_text()
-        match = re.search(r"([\d,]+)\s+bitcoins", text, re.IGNORECASE)
-
-        if match:
-            return int(match.group(1).replace(",", ""))
-    except:
-        pass
-
-    return 252220
-
-
-# =========================
-# 1. 標題
+# 標題
 # =========================
 st.title("BTC & MSTR mNAV Dashboard")
 
 # =========================
-# 2. 抓資料
+# 1. 抓 BTC 資料（CoinGecko）
 # =========================
-df = get_btc_data()
-shares_dynamic, mstr_hist = get_mstr_data()
-BTC_HOLDINGS = get_mstr_btc_holdings()
+url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=90"
+response = requests.get(url)
+data = response.json()
+
+prices = data["prices"]
+volumes = data["total_volumes"]
+
+# 建 dataframe
+df = pd.DataFrame(prices, columns=["timestamp", "price"])
+df["volume"] = [v[1] for v in volumes]
+
+# 時間轉換
+df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
+df.set_index("date", inplace=True)
 
 # =========================
-# 3. BTC → 12H K
+# 2. 轉成日K（OHLC）
 # =========================
-btc_12h = df["price"].resample("12h").ohlc()
-
-btc_12h["BTC_price"] = btc_12h["close"]
+ohlc = df["price"].resample("1D").ohlc()
 
 # =========================
-# 4. MSTR → 12H 對齊
+# 3. 美化顯示
 # =========================
-mstr_12h = mstr_hist.resample("12h").ffill()
+def format_volume(x):
+    return f"{x / 1e9:.1f}B"
 
-df_combined = pd.DataFrame({
-    "BTC_price": btc_12h["BTC_price"],
-    "MSTR_price": mstr_12h
-}).ffill()
+def format_price(x):
+    return f"{x:,.2f}"
+
+df_display = df.sort_index(ascending=False).copy()
+df_display["price"] = df_display["price"].apply(format_price)
+df_display["volume"] = df_display["volume"].apply(format_volume)
+
+st.subheader("BTC Raw Data")
+st.dataframe(df_display.head(50))
+
 # =========================
-# 6. BTC Price
+# 4. BTC 價格圖
 # =========================
 st.subheader("BTC Price Trend")
-st.line_chart(btc_12h["BTC_price"])
+st.line_chart(df["price"])
+
 # =========================
-# 6. BTC 原始資料 (修正版)
-# =========================
-st.subheader("BTC Raw Data")
-
-# 1. 先複製一份資料，避免影響到後續計算
-df_display = df.copy()
-
-# 2. 如果 date 現在是索引 (Index)，把它轉回欄位才能顯示
-if df_display.index.name == "date":
-    df_display = df_display.reset_index()
-
-# 3. 排序：最新的日期排在最上面
-df_display = df_display.sort_values(by="date", ascending=False)
-
-# 4. 格式化數值（讓它好看一點，加上千分位）
-df_display["price"] = df_display["price"].map(lambda x: f"${x:,.2f}")
-df_display["volume"] = df_display["volume"].map(lambda x: f"{x:,.2f}")
-
-# 5. 確保只顯示這三欄 (防止其他隱藏欄位干擾)
-df_display = df_display[["date", "price", "volume"]]
-
-# 6. 正式繪製表格
-st.dataframe(df_display.head(50), use_container_width=True)
-# =========================
-# 8. K線圖
+# 5. K線圖（Plotly）
 # =========================
 st.subheader("BTC Candlestick")
 
 fig = go.Figure(data=[go.Candlestick(
-    x=btc_12h.index.strftime("%-m/%-d"),  # ⭐ 改成 1/1 格式
-    open=btc_12h['open'],
-    high=btc_12h['high'],
-    low=btc_12h['low'],
-    close=btc_12h['close']
+    x=ohlc.index,
+    open=ohlc['open'],
+    high=ohlc['high'],
+    low=ohlc['low'],
+    close=ohlc['close']
 )])
+
+fig.update_layout(
+    xaxis=dict(tickformat="%m/%d"),
+    yaxis=dict(side="left")
+)
 
 st.plotly_chart(fig)
 
 # =========================
-# Sidebar
+# 6. 抓 MSTR 股價
 # =========================
-st.subheader("📌 MSTR Financial Controls")
+mstr = yf.download("MSTR", period="90d", interval="1d")
 
-col1, col2, col3, col4 = st.columns(4)
+# 修正 MultiIndex
+mstr.columns = mstr.columns.droplevel(1)
 
-adj_shares = col1.number_input("Shares Outstanding", value=shares_dynamic, step=1000000)
-DEBT = col2.number_input("Total Debt", value=8254 * 1e6)
-PREF = col3.number_input("Preferred Equity", value=10006 * 1e6)
-CASH = col4.number_input("Cash", value=2250 * 1e6)
+# 只留收盤價
+mstr = mstr[['Close']]
+mstr.rename(columns={"Close": "MSTR_price"}, inplace=True)
 
 # =========================
-# 5. mNAV 計算
+# 7. BTC 日資料
 # =========================
-df_combined["market_cap"] = df_combined["MSTR_price"] * adj_shares
-df_combined["btc_value"] = df_combined["BTC_price"] * BTC_HOLDINGS
+btc_daily = ohlc.copy()
+btc_daily["BTC_price"] = btc_daily["close"]
 
-df_combined["EV"] = (
-    df_combined["market_cap"]
+# 合併
+df_merged = btc_daily.join(mstr, how="inner")
+
+# =========================
+# 8. 抓 BTC Holdings（Bitbo）
+# =========================
+def get_mstr_btc_holdings():
+    url = "https://bitbo.io/treasuries/microstrategy/"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    import re
+    text = soup.get_text()
+
+    match = re.search(r"([\d,]+)\s+bitcoins", text, re.IGNORECASE)
+
+    if match:
+        return int(match.group(1).replace(",", ""))
+    else:
+        return None
+
+BTC_HOLDINGS = get_mstr_btc_holdings()
+st.write("BTC Holdings:", BTC_HOLDINGS)
+
+# =========================
+# 9. 固定 shares（重要！）
+# =========================
+# 這是用 Bitbo 反推的「經濟股數」
+SHARES_OUTSTANDING = 345_000_000
+
+# =========================
+# 10. 計算 Market Cap
+# =========================
+df_merged["market_cap"] = df_merged["MSTR_price"] * SHARES_OUTSTANDING
+
+# =========================
+# 11. BTC 資產價值
+# =========================
+df_merged["btc_value"] = df_merged["BTC_price"] * BTC_HOLDINGS
+
+# =========================
+# 12. Enterprise Value（關鍵）
+# =========================
+# 來源：Bitbo snapshot
+DEBT = 8254 * 1e6
+PREF = 10006 * 1e6
+CASH = 2250 * 1e6
+
+df_merged["EV"] = (
+    df_merged["market_cap"]
     + DEBT
     + PREF
     - CASH
 )
 
-df_combined["mNAV"] = df_combined["EV"] / df_combined["btc_value"]
-df_combined["Premium_%"] = (df_combined["mNAV"] - 1) * 100
+# =========================
+# 13. mNAV（正確版本）
+# =========================
+df_merged["mNAV"] = df_merged["EV"] / df_merged["btc_value"]
 
 # =========================
-# 9. mNAV
+# 14. Premium / Discount
+# =========================
+df_merged["Premium_%"] = (df_merged["mNAV"] - 1) * 100
+
+# =========================
+# 15. 圖表
 # =========================
 st.subheader("mNAV")
-st.line_chart(df_combined["mNAV"])
+st.line_chart(df_merged["mNAV"])
 
 st.subheader("Premium / Discount (%)")
-st.line_chart(df_combined["Premium_%"])
+st.line_chart(df_merged["Premium_%"])
+
+st.subheader("BTC vs MSTR")
+st.line_chart(df_merged[["BTC_price", "MSTR_price"]])
 
 # =========================
-# 10. BTC vs MSTR normalized
+# 16. 最新狀態
 # =========================
-df_compare = df_combined[["BTC_price", "MSTR_price"]].dropna()
+latest_premium = df_merged["Premium_%"].iloc[-1]
 
-df_compare["BTC_norm"] = df_compare["BTC_price"] / df_compare["BTC_price"].iloc[0] * 100
-df_compare["MSTR_norm"] = df_compare["MSTR_price"] / df_compare["MSTR_price"].iloc[0] * 100
-
-st.subheader("BTC vs MSTR (Normalized)")
-st.line_chart(df_compare[["BTC_norm", "MSTR_norm"]])
-
-# =========================
-# 11. 最新狀態
-# =========================
-latest = df_combined.iloc[-1]
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric("MSTR Price", f"${latest['MSTR_price']:.2f}")
-col2.metric("mNAV", f"{latest['mNAV']:.2f}x")
-col3.metric("Premium", f"{latest['Premium_%']:.2f}%")
+if latest_premium > 0:
+    st.success(f"Currently trading at PREMIUM: {latest_premium:.2f}%")
+else:
+    st.error(f"Currently trading at DISCOUNT: {latest_premium:.2f}%")
 
 # =========================
-# 12. 表格
+# 17. 數據表
 # =========================
-df_display = df_combined[[
+df_display = df_merged[[
     "BTC_price",
     "MSTR_price",
     "market_cap",
@@ -223,8 +193,7 @@ df_display = df_combined[[
     "Premium_%"
 ]].copy()
 
-df_display = df_display.sort_index(ascending=False)
-
+# 美化
 df_display["BTC_price"] = df_display["BTC_price"].map(lambda x: f"${x:,.0f}")
 df_display["MSTR_price"] = df_display["MSTR_price"].map(lambda x: f"${x:,.2f}")
 df_display["market_cap"] = df_display["market_cap"].map(lambda x: f"${x/1e9:.2f}B")
@@ -234,4 +203,4 @@ df_display["mNAV"] = df_display["mNAV"].map(lambda x: f"{x:.2f}")
 df_display["Premium_%"] = df_display["Premium_%"].map(lambda x: f"{x:.2f}%")
 
 st.subheader("Detailed Data")
-st.dataframe(df_display.head(20))
+st.dataframe(df_display.tail(20))
