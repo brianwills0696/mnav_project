@@ -20,11 +20,9 @@ data = response.json()
 prices = data["prices"]
 volumes = data["total_volumes"]
 
-# 建 dataframe
 df = pd.DataFrame(prices, columns=["timestamp", "price"])
 df["volume"] = [v[1] for v in volumes]
 
-# 時間轉換
 df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
 df.set_index("date", inplace=True)
 
@@ -81,9 +79,9 @@ st.plotly_chart(fig)
 mstr = yf.download("MSTR", period="90d", interval="1d")
 
 # 修正 MultiIndex
-mstr.columns = mstr.columns.droplevel(1)
+if isinstance(mstr.columns, pd.MultiIndex):
+    mstr.columns = mstr.columns.droplevel(1)
 
-# 只留收盤價
 mstr = mstr[['Close']]
 mstr.rename(columns={"Close": "MSTR_price"}, inplace=True)
 
@@ -93,8 +91,29 @@ mstr.rename(columns={"Close": "MSTR_price"}, inplace=True)
 btc_daily = ohlc.copy()
 btc_daily["BTC_price"] = btc_daily["close"]
 
-# 合併
-df_merged = btc_daily.join(mstr, how="inner")
+# =========================
+# 🔥 FIX: 對齊日期（關鍵）
+# =========================
+btc_daily.index = pd.to_datetime(btc_daily.index).tz_localize(None).normalize()
+mstr.index = pd.to_datetime(mstr.index).tz_localize(None).normalize()
+
+# =========================
+# 合併（穩定版）
+# =========================
+df_merged = pd.merge(
+    btc_daily,
+    mstr,
+    left_index=True,
+    right_index=True,
+    how="inner"
+)
+
+# =========================
+# 🔥 防呆（避免空資料）
+# =========================
+if df_merged.empty:
+    st.error("❌ No overlapping data between BTC and MSTR")
+    st.stop()
 
 # =========================
 # 8. 抓 BTC Holdings（Bitbo）
@@ -106,7 +125,6 @@ def get_mstr_btc_holdings():
 
     import re
     text = soup.get_text()
-
     match = re.search(r"([\d,]+)\s+bitcoins", text, re.IGNORECASE)
 
     if match:
@@ -115,16 +133,21 @@ def get_mstr_btc_holdings():
         return None
 
 BTC_HOLDINGS = get_mstr_btc_holdings()
+
+# 🔥 fallback
+if BTC_HOLDINGS is None:
+    st.warning("⚠️ Failed to fetch BTC holdings, using fallback value")
+    BTC_HOLDINGS = 214000
+
 st.write("BTC Holdings:", BTC_HOLDINGS)
 
 # =========================
-# 9. 固定 shares（重要！）
+# 9. 固定 shares
 # =========================
-# 這是用 Bitbo 反推的「經濟股數」
 SHARES_OUTSTANDING = 345_000_000
 
 # =========================
-# 10. 計算 Market Cap
+# 10. Market Cap
 # =========================
 df_merged["market_cap"] = df_merged["MSTR_price"] * SHARES_OUTSTANDING
 
@@ -134,9 +157,8 @@ df_merged["market_cap"] = df_merged["MSTR_price"] * SHARES_OUTSTANDING
 df_merged["btc_value"] = df_merged["BTC_price"] * BTC_HOLDINGS
 
 # =========================
-# 12. Enterprise Value（關鍵）
+# 12. Enterprise Value
 # =========================
-# 來源：Bitbo snapshot
 DEBT = 8254 * 1e6
 PREF = 10006 * 1e6
 CASH = 2250 * 1e6
@@ -149,7 +171,7 @@ df_merged["EV"] = (
 )
 
 # =========================
-# 13. mNAV（正確版本）
+# 13. mNAV
 # =========================
 df_merged["mNAV"] = df_merged["EV"] / df_merged["btc_value"]
 
@@ -171,7 +193,7 @@ st.subheader("BTC vs MSTR")
 st.line_chart(df_merged[["BTC_price", "MSTR_price"]])
 
 # =========================
-# 16. 最新狀態
+# 16. 最新狀態（安全版）
 # =========================
 latest_premium = df_merged["Premium_%"].iloc[-1]
 
@@ -193,7 +215,6 @@ df_display = df_merged[[
     "Premium_%"
 ]].copy()
 
-# 美化
 df_display["BTC_price"] = df_display["BTC_price"].map(lambda x: f"${x:,.0f}")
 df_display["MSTR_price"] = df_display["MSTR_price"].map(lambda x: f"${x:,.2f}")
 df_display["market_cap"] = df_display["market_cap"].map(lambda x: f"${x/1e9:.2f}B")
