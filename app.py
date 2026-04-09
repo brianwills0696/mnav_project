@@ -395,7 +395,7 @@ if st.session_state.ai_summary:
 # --- 6. 詳細資料 ---
 # st.subheader("5. Detailed Analysis")
 # st.dataframe(df_combined.sort_index(ascending=False).head(20), use_container_width=True)
-=======
+
 import streamlit as st
 import requests
 import pandas as pd
