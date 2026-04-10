@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
 from datetime import datetime
+import re
 
 # =========================
 # 0. Streamlit 設定 + Cache
@@ -57,7 +58,27 @@ def get_mstr_btc_holdings():
         pass
 
     return 252220
-
+def get_effective_diluted_shares():
+    url = "https://saylortracker.com/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        # 使用正則表達式直接從網頁原始碼中找尋數據
+        # 尋找 "Effective Diluted Shares" 後方的數字
+        match = re.search(r'Effective Diluted Shares.*?([\d,]+)', response.text, re.DOTALL)
+        
+        if match:
+            shares_str = match.group(1).replace(",", "")
+            return int(shares_str)
+        else:
+            print("無法在頁面上找到 Effective Diluted Shares，使用預設值")
+            return 257000000  # 預設參考值
+    except Exception as e:
+        print(f"爬蟲發生錯誤: {e}")
+        return 257000000
 
 # =========================
 # 1. 標題

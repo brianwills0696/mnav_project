@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # =========================
 # 0. Streamlit 設定
@@ -92,6 +92,46 @@ with col_input2:
 
 st.divider()
 
+def create_chart(df_h, df_d, df_w, label, is_stock=False):
+    fig = go.Figure()
+    now = df_h['date'].max()
+
+    h_s = now - timedelta(days=3)
+    d_s = now - timedelta(days=60)
+    w_s = now - timedelta(days=365)
+
+    fig.add_trace(go.Candlestick(
+        x=df_h['date'],
+        open=df_h['open'],
+        high=df_h['high'],
+        low=df_h['low'],
+        close=df_h['close']
+    ))
+
+    fig.update_layout(
+        updatemenus=[dict(
+            type="buttons",
+            buttons=[
+                dict(label="H", method="update", args=[
+                    {"x": [df_h.date]},
+                    {"xaxis": {"range": [h_s, now]}}
+                ]),
+                dict(label="D", method="update", args=[
+                    {"x": [df_d.date]},
+                    {"xaxis": {"range": [d_s, now]}}
+                ]),
+                dict(label="W", method="update", args=[
+                    {"x": [df_w.date]},
+                    {"xaxis": {"range": [w_s, now]}}
+                ]),
+            ]
+        )],
+        xaxis=dict(type="date"),
+        height=500
+    )
+
+    return fig
+
 # =========================
 # 3. 執行計算
 # =========================
@@ -115,6 +155,10 @@ df_combined["Premium_%"] = (df_combined["diluted_mNAV"] - 1) * 100
 # 4. 數據清單與指標
 # =========================
 latest = df_combined.iloc[-1]
+
+
+st.subheader("BTC Price")
+st.plotly_chart(create_chart(btc_h, btc_d, btc_w, "BTC"), use_container_width=True)
 
 st.subheader("Current indicator")
 m1, m2, m3, m4 = st.columns(4)

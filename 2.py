@@ -11,182 +11,166 @@ from streamlit_autorefresh import st_autorefresh
 from openai import OpenAI
 
 # =========================
-# 0. Streamlit 設定與自動整理
+# 0. Streamlit 基本設定
 # =========================
-st.set_page_config(page_title="MSTR Diluted mNAV Dashboard Pro", layout="wide")
-# 每 60 秒自動重新整理一次介面 (副函式功能)
-st_autorefresh(interval=60000, key="global_update")
+st.set_page_config(page_title="MSTR & BTC Real-time Dashboard", layout="wide")
+st_autorefresh(interval=60000, key="global_update") # 每分鐘自動整理
 
-# 初始化 OpenAI (若有 API Key 請確保環境變數已設定)
+# OpenAI 初始化 (請確保已設定環境變數或在 Secrets 中配置)
 client = OpenAI()
 
 # =========================
-# 1. 資料抓取函數 (整合爬蟲與 yfinance)
+# 1. 資料抓取函數 (防禦性設計)
 # =========================
 
-@st.cache_data(ttl=3600)
-def get_btc_data():
-    # 使用 Binance API 獲取更精細的數據 (副函式優點)
-    url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=1000"
+@st.cache_data(ttl=60)
+def fetch_btc_klines(interval="1h", limit=500):
+    """從 Binance 抓取 K 線數據"""
+    url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
     try:
-        data = requests.get(url, timeout=10).json()
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        data = res.json()
         df = pd.DataFrame(data, columns=["ot", "open", "high", "low", "close", "vol", "ct", "qv", "n", "tbb", "tbq", "i"])
         df["date"] = pd.to_datetime(df["ot"], unit="ms")
-        df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
         return df
-    except:
-        # 備援機制
+    except Exception as e:
+        st.error(f"BTC 數據抓取失敗: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=86400)
-def get_mstr_data():
-    ticker = yf.Ticker("MSTR")
-    hist = ticker.history(period="2y", interval="1d")
-    hist.index = hist.index.tz_localize(None)
-    return hist
-
 @st.cache_data(ttl=3600)
-def get_effective_diluted_shares():
-    url = "https://saylortracker.com/"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def fetch_mstr_stock():
+    """從 Yahoo Finance 抓取 MSTR 數據，附帶頻率限制處理"""
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        match = re.search(r'Effective Diluted Shares.*?([\d,]+)', response.text, re.DOTALL)
-        if match:
-            return int(match.group(1).replace(",", ""))
-    except:
-        pass
-    return 380000000
-
-@st.cache_data(ttl=3600)
-def get_mstr_btc_holdings():
-    url = "https://bitbo.io/treasuries/microstrategy/"
-    try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
-        match = re.search(r"([\d,]+)\s+bitcoins", soup.get_text(), re.IGNORECASE)
-        if match:
-            return int(match.group(1).replace(",", ""))
-    except:
-        pass
-    return 252220
-
-# AI 分析函數 (整合自副函式)
-def generate_ai_summary(df):
-    latest = df.iloc[-1]
-    prompt = f"""
-    You are a professional macro and crypto equity analyst.
-    Current BTC Price: ${latest['BTC_price']:,.2f}
-    MSTR Price: ${latest['MSTR_price']:,.2f}
-    Current Diluted mNAV: {latest['diluted_mNAV']:.2f}x
-    Premium/Discount: {latest['Premium_%']:.2f}%
-
-    Please provide:
-    1. Trend analysis
-    2. mNAV valuation perspective
-    3. Short-term market insight
-    """
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o", # 修正為可用模型
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
+        ticker = yf.Ticker("MSTR")
+        df = ticker.history(period="2y", interval="1d")
+        if df.empty:
+            return pd.DataFrame()
+        df.index = df.index.tz_localize(None)
+        df = df.reset_index().rename(columns={"Date": "date", "Open": "open", "High": "high", "Low": "low", "Close": "close"})
+        return df
     except Exception as e:
-        return f"AI Analysis currently unavailable: {str(e)}"
+        st.warning(f"MSTR 數據受限 (yfinance limit): {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_live_stats():
+    """抓取 SaylorTracker 與 Bitbo 的即時參數"""
+    stats = {"shares": 380000000, "btc_holdings": 252220}
+    try:
+        # 爬取持幣量
+        res_bitbo = requests.get("https://bitbo.io/treasuries/microstrategy/", timeout=10)
+        match_btc = re.search(r"([\d,]+)\s+bitcoins", res_bitbo.text, re.IGNORECASE)
+        if match_btc:
+            stats["btc_holdings"] = int(match_btc.group(1).replace(",", ""))
+            
+        # 爬取稀釋股數
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res_saylor = requests.get("https://saylortracker.com/", headers=headers, timeout=10)
+        match_shares = re.search(r'Effective Diluted Shares.*?([\d,]+)', res_saylor.text, re.DOTALL)
+        if match_shares:
+            stats["shares"] = int(match_shares.group(1).replace(",", ""))
+    except:
+        pass
+    return stats
 
 # =========================
-# 2. 頁面頂端：參數調整區
+# 2. 側邊欄與參數調整
 # =========================
 st.title("🚀 MSTR Diluted mNAV Dashboard")
 
-# 預抓數據作為預設值
-default_shares = get_effective_diluted_shares()
-default_btc = get_mstr_btc_holdings()
+live_stats = get_live_stats()
 
-with st.expander("🛠️ 核心計算參數調整 (點擊展開)", expanded=True):
-    col_input1, col_input2, col_input3 = st.columns(3)
-    with col_input1:
-        adj_diluted_shares = st.number_input("Diluted Shares (稀釋後總股數)", value=default_shares, step=100000)
-    with col_input2:
-        adj_btc_holdings = st.number_input("BTC Holdings (MSTR 總持幣量)", value=default_btc, step=100)
-    with col_input3:
-        # 整合副函式的財務負擔概念
-        net_debt = st.number_input("Net Debt (債務-現金, USD)", value=8254000000 - 2250000000, step=100000000)
-
-st.divider()
+with st.expander("🛠️ 核心計算參數調整", expanded=False):
+    c1, c2, c3 = st.columns(3)
+    adj_shares = c1.number_input("稀釋後總股數", value=live_stats["shares"], step=100000)
+    adj_btc = c2.number_input("BTC 總持量", value=live_stats["btc_holdings"], step=100)
+    adj_net_debt = c3.number_input("淨債務 (USD)", value=6000000000, step=100000000) # 預估值
 
 # =========================
-# 3. 數據計算
+# 3. 數據處理中心 (關鍵：防止 IndexError)
 # =========================
-btc_raw = get_btc_data()
-mstr_raw = get_mstr_data()
+# 獲取 BTC 數據 (預設日線用於計算)
+btc_daily = fetch_btc_klines(interval="1d", limit=500)
+mstr_daily = fetch_mstr_stock()
 
-# 資料對齊
-btc_close = btc_raw.set_index("date")["close"]
-df_combined = pd.DataFrame({
-    "BTC_price": btc_close,
-    "MSTR_price": mstr_raw["Close"]
-}).ffill().dropna()
+# 資料對齊檢查
+if btc_daily.empty or mstr_daily.empty:
+    st.error("❌ 無法取得市場數據。請稍後再試，或檢查 API 限制。")
+    st.info("提示：Yahoo Finance 經常對 Streamlit Cloud 的 IP 進行頻率限制。")
+    st.stop() # 強制停止，防止 iloc[-1] 崩潰
 
-# 計算 Diluted mNAV (整合主函式的公式與副函式的財務結構)
-# 公式：(市值 + 淨債務) / (比特幣持倉 * 比特幣價格)
-df_combined["market_cap"] = adj_diluted_shares * df_combined["MSTR_price"]
-df_combined["btc_value"] = adj_btc_holdings * df_combined["BTC_price"]
-df_combined["diluted_mNAV"] = (df_combined["market_cap"] + net_debt) / df_combined["btc_value"]
+# 合併數據
+df_combined = pd.merge(
+    btc_daily[['date', 'close']].rename(columns={'close': 'BTC_price'}),
+    mstr_daily[['date', 'close']].rename(columns={'close': 'MSTR_price'}),
+    on='date', how='inner'
+).set_index('date')
+
+# 計算指標
+df_combined["market_cap"] = adj_shares * df_combined["MSTR_price"]
+df_combined["btc_value"] = adj_btc * df_combined["BTC_price"]
+df_combined["diluted_mNAV"] = (df_combined["market_cap"] + adj_net_debt) / df_combined["btc_value"]
 df_combined["Premium_%"] = (df_combined["diluted_mNAV"] - 1) * 100
 
 latest = df_combined.iloc[-1]
 
 # =========================
-# 4. 關鍵指標看板
+# 4. 主要 UI 配置
 # =========================
+
+# --- 指標區 ---
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("BTC Price", f"${latest['BTC_price']:,.0f}")
 m2.metric("MSTR Price", f"${latest['MSTR_price']:.2f}")
 m3.metric("Diluted mNAV", f"{latest['diluted_mNAV']:.2f}x")
 m4.metric("Premium %", f"{latest['Premium_%']:.2f}%")
 
-m5, m6, m7, m8 = st.columns(4)
-m5.metric("Net Debt Applied", f"${net_debt/1e9:.2f}B")
-m6.metric("BTC Holdings", f"{adj_btc_holdings:,.0f}")
-m7.metric("BTC per Share", f"{(adj_btc_holdings / adj_diluted_shares):.6f}")
-m8.metric("MSTR Market Cap", f"${(df_combined['market_cap'].iloc[-1])/1e9:.2f}B")
+# --- BTC K線圖 (動態尺度) ---
+st.subheader("📊 Bitcoin 價格走勢")
+tf = st.segmented_control("時間尺度", ["小時 (3天)", "日 (3個月)", "週 (1年)"], default="日 (3個月)")
 
-# =========================
-# 5. 視覺化圖表
-# =========================
-# 圖表 A: BTC K線圖 (整合副函式繪圖邏輯)
-st.subheader("📊 Bitcoin Price Action (1H)")
-fig_btc = go.Figure(data=[go.Candlestick(
-    x=btc_raw['date'], open=btc_raw['open'], high=btc_raw['high'], low=btc_raw['low'], close=btc_raw['close']
-)])
-fig_btc.update_layout(height=400, margin=dict(t=0, b=0), xaxis_rangeslider_visible=False)
-st.plotly_chart(fig_btc, use_container_width=True)
+if tf == "小時 (3天)":
+    k_df = fetch_btc_klines("1h", 72)
+elif tf == "日 (3個月)":
+    k_df = fetch_btc_klines("1d", 90)
+else:
+    k_df = fetch_btc_klines("1w", 52)
 
-# 圖表 B: mNAV 趨勢與價格相關性
-st.subheader("📈 mNAV Valuation & Correlation")
-fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
-fig_dual.add_trace(go.Scatter(x=df_combined.index, y=df_combined["diluted_mNAV"], name="mNAV Ratio", line=dict(color="gold", width=3)), secondary_y=False)
-fig_dual.add_trace(go.Scatter(x=df_combined.index, y=df_combined["BTC_price"], name="BTC Price", line=dict(color="blue")), secondary_y=True)
-fig_dual.update_layout(hovermode="x unified", height=400)
-st.plotly_chart(fig_dual, use_container_width=True)
+if not k_df.empty:
+    fig_k = go.Figure(data=[go.Candlestick(
+        x=k_df['date'], open=k_df['open'], high=k_df['high'], low=k_df['low'], close=k_df['close']
+    )])
+    fig_k.update_layout(height=450, margin=dict(t=0, b=0), xaxis_rangeslider_visible=False, template="plotly_dark")
+    st.plotly_chart(fig_k, use_container_width=True)
 
-# =========================
-# 6. AI 分析與歷史資料
-# =========================
-col_left, col_right = st.columns([1, 1])
+# --- mNAV 歷史圖表 ---
+st.subheader("📈 mNAV 溢價/折價歷史趨勢")
+fig_nav = make_subplots(specs=[[{"secondary_y": True}]])
+fig_nav.add_trace(go.Scatter(x=df_combined.index, y=df_combined["diluted_mNAV"], name="mNAV Ratio", line=dict(color="gold", width=2)), secondary_y=False)
+fig_nav.add_trace(go.Scatter(x=df_combined.index, y=df_combined["BTC_price"], name="BTC Price (背景)", line=dict(color="rgba(255,255,255,0.1)")), secondary_y=True)
+fig_nav.update_layout(height=400, template="plotly_dark", hovermode="x unified")
+st.plotly_chart(fig_nav, use_container_width=True)
 
-with col_left:
-    st.subheader("🤖 AI Market Insight")
-    if st.button("Generate AI Analysis"):
-        with st.spinner("Analyzing market data..."):
-            insight = generate_ai_summary(df_combined)
-            st.info(insight)
+# --- AI 與 資料表格 ---
+col_ai, col_data = st.columns([1, 1])
 
-with col_right:
-    st.subheader("📜 Recent History")
-    df_display = df_combined.sort_index(ascending=False).head(10).copy()
-    st.dataframe(df_display[["BTC_price", "MSTR_price", "diluted_mNAV", "Premium_%"]], use_container_width=True)
+with col_ai:
+    st.subheader("🤖 AI 策略分析")
+    if st.button("啟動 AI 市場診斷"):
+        with st.spinner("AI 正在分析數據..."):
+            prompt = f"BTC: {latest['BTC_price']}, MSTR: {latest['MSTR_price']}, mNAV: {latest['diluted_mNAV']:.2f}. 分析當前 MSTR 相對於 BTC 的溢價狀況與投資情緒。"
+            try:
+                response = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
+                st.info(response.choices[0].message.content)
+            except Exception as e:
+                st.error(f"AI 呼叫失敗: {e}")
 
-st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data source: Binance, Yahoo Finance, Bitbo")
+with col_data:
+    st.subheader("📋 歷史數據摘要")
+    st.dataframe(
+        df_combined[['BTC_price', 'MSTR_price', 'diluted_mNAV', 'Premium_%']]
+        .sort_index(ascending=False).head(20), 
+        use_container_width=True
+    )
