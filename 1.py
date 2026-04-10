@@ -46,7 +46,7 @@ def get_effective_diluted_shares():
             return int(match.group(1).replace(",", ""))
     except:
         pass
-    return 257000000
+    return 380000000
 
 @st.cache_data(ttl=3600)
 def get_mstr_btc_holdings():
@@ -65,13 +65,13 @@ def get_mstr_btc_holdings():
 # =========================
 # 2. 頁面頂端：參數調整區 (原 Sidebar)
 # =========================
-st.title("🚀 MSTR Diluted mNAV Dashboard")
+st.title("MSTR Diluted mNAV Dashboard")
 
 # 預抓數據作為預設值
 default_shares = get_effective_diluted_shares()
 default_btc = get_mstr_btc_holdings()
 
-st.markdown("### ⚙️ 核心計算參數調整")
+st.markdown("### 核心計算參數調整")
 col_input1, col_input2 = st.columns(2)
 
 with col_input1:
@@ -116,7 +116,7 @@ df_combined["Premium_%"] = (df_combined["diluted_mNAV"] - 1) * 100
 # =========================
 latest = df_combined.iloc[-1]
 
-st.subheader("📊 當前關鍵指標")
+st.subheader("Current indicator")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("BTC Price", f"${latest['BTC_price']:,.0f}")
 m2.metric("MSTR Price", f"${latest['MSTR_price']:.2f}")
@@ -129,10 +129,12 @@ m6.metric("BTC Holdings", f"{adj_btc_holdings:,.0f} BTC")
 m7.metric("BTC per Share", f"{(adj_btc_holdings / adj_diluted_shares):.6f}")
 m8.metric("Total BTC Value", f"${(adj_btc_holdings * latest['BTC_price'])/1e9:.2f}B")
 
+st.subheader("https://saylortracker.com/?tab=charts")
+
 # =========================
 # 5. 視覺化圖表 (雙 Y 軸)
 # =========================
-st.subheader("📈 BTC vs MSTR Price Correlation")
+st.subheader("BTC vs MSTR Price Correlation")
 fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
 fig_dual.add_trace(go.Scatter(x=df_combined.index, y=df_combined["BTC_price"], name="BTC (Left)", line=dict(color="orange")), secondary_y=False)
 fig_dual.add_trace(go.Scatter(x=df_combined.index, y=df_combined["MSTR_price"], name="MSTR (Right)", line=dict(color="dodgerblue")), secondary_y=True)
@@ -144,7 +146,7 @@ st.plotly_chart(fig_dual, use_container_width=True)
 # =========================
 # 6. 詳細資料表格
 # =========================
-st.subheader("📋 歷史數據清單")
+st.subheader("Historical Database")
 df_display = df_combined.sort_index(ascending=False).copy()
 df_display["BTC_price"] = df_display["BTC_price"].map(lambda x: f"${x:,.0f}")
 df_display["MSTR_price"] = df_display["MSTR_price"].map(lambda x: f"${x:,.2f}")

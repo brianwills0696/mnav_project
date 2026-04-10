@@ -333,7 +333,7 @@ if not st.session_state.price_history.empty:
         x=st.session_state.price_history["time"], 
         y=st.session_state.price_history["price"],
         mode='lines+markers', 
-        line=dict(color='#02d495', width=3),  # 這裡補上逗號
+        line=dict(color='#02d495', width=3), 
         fill='tozeroy',                 
         fillcolor='rgba(2, 212, 149, 0.2)'   
     ))
@@ -345,6 +345,8 @@ if not st.session_state.price_history.empty:
     )
     st.plotly_chart(fig_spot, use_container_width=True)
     st.write(f"**Session High:** {st.session_state.price_max:,.2f} | **Session Low:** {st.session_state.price_min:,.2f}")
+
+    fig = go.Figure()
 
 # 指標
 bt_c1, bt_c2, bt_c3 = st.columns(3)

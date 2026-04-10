@@ -4,36 +4,127 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
+from datetime import datetime
 
 # =========================
-# 標題
+# 0. Streamlit 設定 + Cache
+# =========================
+st.set_page_config(page_title="BTC & MSTR mNAV Dashboard", layout="wide")
+
+@st.cache_data(ttl=3600)
+def get_btc_data():
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=90"
+    response = requests.get(url, timeout=10)
+    data = response.json()
+
+    prices = data["prices"]
+    volumes = data["total_volumes"]
+
+    df = pd.DataFrame(prices, columns=["timestamp", "price"])
+    df["volume"] = [v[1] for v in volumes]
+
+    df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df.set_index("date", inplace=True)
+
+    df.index = df.index.tz_localize(None)
+
+    return df
+
+@st.cache_data(ttl=3600)
+def get_mstr_data():
+    ticker = yf.Ticker("MSTR")
+    shares = ticker.info.get("sharesOutstanding", 345000000)
+
+    hist = ticker.history(period="90d")["Close"]
+    hist.index = hist.index.tz_localize(None)
+
+    return shares, hist
+
+@st.cache_data(ttl=3600)
+def get_mstr_btc_holdings():
+    url = "https://bitbo.io/treasuries/microstrategy/"
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        import re
+        text = soup.get_text()
+        match = re.search(r"([\d,]+)\s+bitcoins", text, re.IGNORECASE)
+
+        if match:
+            return int(match.group(1).replace(",", ""))
+    except:
+        pass
+
+    return 252220
+
+
+# =========================
+# 1. 標題
 # =========================
 st.title("BTC & MSTR mNAV Dashboard")
 
 # =========================
-# 1. 抓 BTC 資料（CoinGecko）
+# 2. 抓資料
 # =========================
-url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=90"
-response = requests.get(url)
-data = response.json()
-
-prices = data["prices"]
-volumes = data["total_volumes"]
-
-df = pd.DataFrame(prices, columns=["timestamp", "price"])
-df["volume"] = [v[1] for v in volumes]
-
-df["date"] = pd.to_datetime(df["timestamp"], unit="ms")
-df.set_index("date", inplace=True)
+df = get_btc_data()
+shares_dynamic, mstr_hist = get_mstr_data()
+BTC_HOLDINGS = get_mstr_btc_holdings()
 
 # =========================
-# 2. 轉成日K（OHLC）
+# Sidebar
 # =========================
-ohlc = df["price"].resample("1D").ohlc()
+st.sidebar.header("📌 財務參數微調")
+
+adj_shares = st.sidebar.number_input("發行股數", value=shares_dynamic, step=1000000)
+DEBT = st.sidebar.number_input("總負債", value=8254 * 1e6)
+PREF = st.sidebar.number_input("優先股", value=10006 * 1e6)
+CASH = st.sidebar.number_input("現金", value=2250 * 1e6)
 
 # =========================
-# 3. 美化顯示
+# 3. BTC → 12H K
 # =========================
+btc_12h = df["price"].resample("12h").ohlc()
+
+btc_12h["BTC_price"] = btc_12h["close"]
+
+# =========================
+# 4. MSTR → 12H 對齊
+# =========================
+mstr_12h = mstr_hist.resample("12h").ffill()
+
+df_combined = pd.DataFrame({
+    "BTC_price": btc_12h["BTC_price"],
+    "MSTR_price": mstr_12h
+}).ffill()
+
+# =========================
+# 5. mNAV 計算
+# =========================
+df_combined["market_cap"] = df_combined["MSTR_price"] * adj_shares
+df_combined["btc_value"] = df_combined["BTC_price"] * BTC_HOLDINGS
+
+df_combined["EV"] = (
+    df_combined["market_cap"]
+    + DEBT
+    + PREF
+    - CASH
+)
+
+df_combined["mNAV"] = df_combined["EV"] / df_combined["btc_value"]
+df_combined["Premium_%"] = (df_combined["mNAV"] - 1) * 100
+
+# =========================
+# 6. BTC Price
+# =========================
+st.subheader("BTC Price Trend")
+st.line_chart(df["price"])
+
+# =========================
+# 7. BTC Raw Data
+# =========================
+st.subheader("BTC Raw Data")
+
 def format_volume(x):
     return f"{x / 1e9:.1f}B"
 
@@ -41,171 +132,99 @@ def format_price(x):
     return f"{x:,.2f}"
 
 df_display = df.sort_index(ascending=False).copy()
+df_display = df_display.reset_index()
+df_display = df_display.drop(columns=["timestamp"])
+
 df_display["price"] = df_display["price"].apply(format_price)
 df_display["volume"] = df_display["volume"].apply(format_volume)
 
-st.subheader("BTC Raw Data")
 st.dataframe(df_display.head(50))
 
 # =========================
-# 4. BTC 價格圖
-# =========================
-st.subheader("BTC Price Trend")
-st.line_chart(df["price"])
-
-# =========================
-# 5. K線圖（Plotly）
+# 8. K線圖（12H + 日期格式）
 # =========================
 st.subheader("BTC Candlestick")
 
 fig = go.Figure(data=[go.Candlestick(
-    x=ohlc.index,
-    open=ohlc['open'],
-    high=ohlc['high'],
-    low=ohlc['low'],
-    close=ohlc['close']
+    x=btc_12h.index.strftime("%-m/%-d"),  # ⭐ 改成 1/1 格式
+    open=btc_12h['open'],
+    high=btc_12h['high'],
+    low=btc_12h['low'],
+    close=btc_12h['close']
 )])
-
-fig.update_layout(
-    xaxis=dict(tickformat="%m/%d"),
-    yaxis=dict(side="left")
-)
 
 st.plotly_chart(fig)
 
 # =========================
-# 6. 抓 MSTR 股價
-# =========================
-mstr = yf.download("MSTR", period="90d", interval="1d")
-
-# 修正 MultiIndex
-if isinstance(mstr.columns, pd.MultiIndex):
-    mstr.columns = mstr.columns.droplevel(1)
-
-mstr = mstr[['Close']]
-mstr.rename(columns={"Close": "MSTR_price"}, inplace=True)
-
-# =========================
-# 7. BTC 日資料
-# =========================
-btc_daily = ohlc.copy()
-btc_daily["BTC_price"] = btc_daily["close"]
-
-# =========================
-# 🔥 FIX: 對齊日期（關鍵）
-# =========================
-btc_daily.index = pd.to_datetime(btc_daily.index).tz_localize(None).normalize()
-mstr.index = pd.to_datetime(mstr.index).tz_localize(None).normalize()
-
-# =========================
-# 合併（穩定版）
-# =========================
-df_merged = pd.merge(
-    btc_daily,
-    mstr,
-    left_index=True,
-    right_index=True,
-    how="inner"
-)
-
-# =========================
-# 🔥 防呆（避免空資料）
-# =========================
-if df_merged.empty:
-    st.error("❌ No overlapping data between BTC and MSTR")
-    st.stop()
-
-# =========================
-# 8. 抓 BTC Holdings（Bitbo）
-# =========================
-def get_mstr_btc_holdings():
-    url = "https://bitbo.io/treasuries/microstrategy/"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    import re
-    text = soup.get_text()
-    match = re.search(r"([\d,]+)\s+bitcoins", text, re.IGNORECASE)
-
-    if match:
-        return int(match.group(1).replace(",", ""))
-    else:
-        return None
-
-BTC_HOLDINGS = get_mstr_btc_holdings()
-
-# 🔥 fallback
-if BTC_HOLDINGS is None:
-    st.warning("⚠️ Failed to fetch BTC holdings, using fallback value")
-    BTC_HOLDINGS = 214000
-
-st.write("BTC Holdings:", BTC_HOLDINGS)
-
-# =========================
-# 9. 固定 shares
-# =========================
-SHARES_OUTSTANDING = 345_000_000
-
-# =========================
-# 10. Market Cap
-# =========================
-df_merged["market_cap"] = df_merged["MSTR_price"] * SHARES_OUTSTANDING
-
-# =========================
-# 11. BTC 資產價值
-# =========================
-df_merged["btc_value"] = df_merged["BTC_price"] * BTC_HOLDINGS
-
-# =========================
-# 12. Enterprise Value
-# =========================
-DEBT = 8254 * 1e6
-PREF = 10006 * 1e6
-CASH = 2250 * 1e6
-
-df_merged["EV"] = (
-    df_merged["market_cap"]
-    + DEBT
-    + PREF
-    - CASH
-)
-
-# =========================
-# 13. mNAV
-# =========================
-df_merged["mNAV"] = df_merged["EV"] / df_merged["btc_value"]
-
-# =========================
-# 14. Premium / Discount
-# =========================
-df_merged["Premium_%"] = (df_merged["mNAV"] - 1) * 100
-
-# =========================
-# 15. 圖表
+# 9. mNAV
 # =========================
 st.subheader("mNAV")
-st.line_chart(df_merged["mNAV"])
+st.line_chart(df_combined["mNAV"])
 
 st.subheader("Premium / Discount (%)")
-st.line_chart(df_merged["Premium_%"])
-
-st.subheader("BTC vs MSTR")
-st.line_chart(df_merged[["BTC_price", "MSTR_price"]])
+st.line_chart(df_combined["Premium_%"])
 
 # =========================
-# 16. 最新狀態（安全版）
+# 10. BTC vs MSTR normalized
 # =========================
-latest_premium = df_merged["Premium_%"].iloc[-1]
+df_compare = df_combined[["BTC_price", "MSTR_price"]].dropna()
 
-if latest_premium > 0:
-    st.success(f"Currently trading at PREMIUM: {latest_premium:.2f}%")
-else:
-    st.error(f"Currently trading at DISCOUNT: {latest_premium:.2f}%")
+df_compare["BTC_norm"] = df_compare["BTC_price"] / df_compare["BTC_price"].iloc[0] * 100
+df_compare["MSTR_norm"] = df_compare["MSTR_price"] / df_compare["MSTR_price"].iloc[0] * 100
+
+st.subheader("BTC vs MSTR (Normalized)")
+st.line_chart(df_compare[["BTC_norm", "MSTR_norm"]])
 
 # =========================
-# 17. 數據表
+# 10. BTC vs MSTR (雙 Y 軸)
 # =========================
-df_display = df_merged[[
+st.subheader("BTC vs MSTR Price (Dual Y-Axis)")
+
+df_compare = df_combined[["BTC_price", "MSTR_price"]].dropna()
+
+# 建立一個帶有次座標軸的圖表
+from plotly.subplots import make_subplots
+
+fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
+
+# 加入 BTC 曲線 (左軸)
+fig_dual.add_trace(
+    go.Scatter(x=df_compare.index, y=df_compare["BTC_price"], name="BTC Price ($)", line=dict(color="orange")),
+    secondary_y=False,
+)
+
+# 加入 MSTR 曲線 (右軸)
+fig_dual.add_trace(
+    go.Scatter(x=df_compare.index, y=df_compare["MSTR_price"], name="MSTR Price ($)", line=dict(color="blue")),
+    secondary_y=True,
+)
+
+# 設定圖表標題與軸標籤
+fig_dual.update_layout(
+    title_text="BTC and MSTR Price Comparison",
+    hovermode="x unified"
+)
+
+fig_dual.update_yaxes(title_text="<b>BTC</b> Price (USD)", secondary_y=False)
+fig_dual.update_yaxes(title_text="<b>MSTR</b> Price (USD)", secondary_y=True)
+
+st.plotly_chart(fig_dual, use_container_width=True)
+
+# =========================
+# 11. 最新狀態
+# =========================
+latest = df_combined.iloc[-1]
+
+col1, col2, col3 = st.columns(3)
+
+col1.metric("MSTR Price", f"${latest['MSTR_price']:.2f}")
+col2.metric("mNAV", f"{latest['mNAV']:.2f}x")
+col3.metric("Premium", f"{latest['Premium_%']:.2f}%")
+
+# =========================
+# 12. 表格（降序 + 12H）
+# =========================
+df_display = df_combined[[
     "BTC_price",
     "MSTR_price",
     "market_cap",
@@ -214,6 +233,8 @@ df_display = df_merged[[
     "mNAV",
     "Premium_%"
 ]].copy()
+
+df_display = df_display.sort_index(ascending=False)
 
 df_display["BTC_price"] = df_display["BTC_price"].map(lambda x: f"${x:,.0f}")
 df_display["MSTR_price"] = df_display["MSTR_price"].map(lambda x: f"${x:,.2f}")
@@ -224,4 +245,4 @@ df_display["mNAV"] = df_display["mNAV"].map(lambda x: f"{x:.2f}")
 df_display["Premium_%"] = df_display["Premium_%"].map(lambda x: f"{x:.2f}%")
 
 st.subheader("Detailed Data")
-st.dataframe(df_display.tail(20))
+st.dataframe(df_display.head(20))
