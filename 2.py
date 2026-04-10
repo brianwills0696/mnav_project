@@ -22,23 +22,28 @@ client = OpenAI()
 # =========================
 # 1. 資料抓取函數 (防禦性設計)
 # =========================
-
 @st.cache_data(ttl=60)
 def fetch_btc_klines(interval="1h", limit=500):
-    """從 Binance 抓取 K 線數據"""
+    """從 Binance 抓取 K 線數據，增加長度檢查"""
     url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
+        
+        # 關鍵防護：檢查回傳的 JSON 是否為空列表
+        if not data or len(data) == 0:
+            st.warning(f"Binance 未回傳 {interval} 的數據。")
+            return pd.DataFrame()
+            
         df = pd.DataFrame(data, columns=["ot", "open", "high", "low", "close", "vol", "ct", "qv", "n", "tbb", "tbq", "i"])
         df["date"] = pd.to_datetime(df["ot"], unit="ms")
         df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
         return df
     except Exception as e:
-        st.error(f"BTC 數據抓取失敗: {e}")
+        st.error(f"BTC 數據抓取失敗 ({interval}): {e}")
         return pd.DataFrame()
-
+    
 @st.cache_data(ttl=3600)
 def fetch_mstr_stock():
     """從 Yahoo Finance 抓取 MSTR 數據，附帶頻率限制處理"""
@@ -129,21 +134,39 @@ m4.metric("Premium %", f"{latest['Premium_%']:.2f}%")
 
 # --- BTC K線圖 (動態尺度) ---
 st.subheader("📊 Bitcoin 價格走勢")
-tf = st.segmented_control("時間尺度", ["小時 (3天)", "日 (3個月)", "週 (1年)"], default="日 (3個月)")
 
-if tf == "小時 (3天)":
+# 建議將 segmented_control 放在一個變數中
+selected_tf = st.segmented_control("時間尺度", ["小時 (3天)", "日 (3個月)", "週 (1年)"], default="日 (3個月)")
+
+# 根據選擇抓取資料
+if selected_tf == "小時 (3天)":
     k_df = fetch_btc_klines("1h", 72)
-elif tf == "日 (3個月)":
+elif selected_tf == "日 (3個月)":
     k_df = fetch_btc_klines("1d", 90)
 else:
     k_df = fetch_btc_klines("1w", 52)
 
-if not k_df.empty:
-    fig_k = go.Figure(data=[go.Candlestick(
-        x=k_df['date'], open=k_df['open'], high=k_df['high'], low=k_df['low'], close=k_df['close']
-    )])
-    fig_k.update_layout(height=450, margin=dict(t=0, b=0), xaxis_rangeslider_visible=False, template="plotly_dark")
-    st.plotly_chart(fig_k, use_container_width=True)
+# --- 關鍵修正：檢查 k_df 是否為空 ---
+if k_df is not None and not k_df.empty:
+    try:
+        fig_k = go.Figure(data=[go.Candlestick(
+            x=k_df['date'], 
+            open=k_df['open'], 
+            high=k_df['high'], 
+            low=k_df['low'], 
+            close=k_df['close']
+        )])
+        fig_k.update_layout(
+            height=450, 
+            margin=dict(t=0, b=0), 
+            xaxis_rangeslider_visible=False, 
+            template="plotly_dark"
+        )
+        st.plotly_chart(fig_k, use_container_width=True)
+    except Exception as chart_err:
+        st.error(f"繪圖時發生錯誤: {chart_err}")
+else:
+    st.info(f"暫時無法顯示 {selected_tf} 的 K 線數據，請切換其他尺度或稍後再試。")
 
 # --- mNAV 歷史圖表 ---
 st.subheader("📈 mNAV 溢價/折價歷史趨勢")
