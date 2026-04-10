@@ -8,7 +8,6 @@ import yfinance as yf
 import re
 from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
-from openai import OpenAI
 
 # =========================
 # 0. Streamlit 基本設定
@@ -16,18 +15,12 @@ from openai import OpenAI
 st.set_page_config(page_title="MSTR & BTC Dashboard (CoinGecko)", layout="wide")
 st_autorefresh(interval=60000, key="global_update") 
 
-client = OpenAI()
-
 # =========================
-# 1. 資料抓取函數 (切換至 CoinGecko)
+# 1. 資料抓取函數 (CoinGecko & YFinance)
 # =========================
 @st.cache_data(ttl=300) # CoinGecko 免費版建議 TTL 設長一點
 def fetch_btc_coingecko_ohlc(days="1"):
-    """
-    從 CoinGecko 抓取 OHLC 數據
-    days: 1, 7, 14, 30, 90, 180, 365, max
-    """
-    # CoinGecko OHLC API
+    """從 CoinGecko 抓取 OHLC 數據"""
     url = f"https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days={days}"
     try:
         res = requests.get(url, timeout=15)
@@ -50,6 +43,7 @@ def fetch_btc_coingecko_ohlc(days="1"):
 
 @st.cache_data(ttl=3600)
 def fetch_mstr_stock():
+    """從 Yahoo Finance 抓取 MSTR 數據"""
     try:
         ticker = yf.Ticker("MSTR")
         df = ticker.history(period="2y", interval="1d")
@@ -63,6 +57,7 @@ def fetch_mstr_stock():
 
 @st.cache_data(ttl=3600)
 def get_live_stats():
+    """抓取 SaylorTracker 與 Bitbo 的即時參數"""
     stats = {"shares": 380000000, "btc_holdings": 252220}
     try:
         # 爬取持幣量
@@ -78,16 +73,16 @@ def get_live_stats():
     return stats
 
 # =========================
-# 2. UI 介面與參數
+# 2. UI 介面與參數調整
 # =========================
 st.title("🚀 MSTR Diluted mNAV Dashboard")
 live_stats = get_live_stats()
 
 with st.expander("🛠️ 核心計算參數調整", expanded=False):
     c1, c2, c3 = st.columns(3)
-    adj_shares = c1.number_input("稀釋後總股數", value=live_stats["shares"], step=100000)
-    adj_btc = c2.number_input("BTC 總持量", value=live_stats["btc_holdings"], step=100)
-    adj_net_debt = c3.number_input("淨債務 (USD)", value=6000000000, step=100000000)
+    adj_shares = c1.number_input("稀釋後總股數 (Shares)", value=live_stats["shares"], step=100000)
+    adj_btc = c2.number_input("BTC 總持倉 (BTC)", value=live_stats["btc_holdings"], step=100)
+    adj_net_debt = c3.number_input("估計淨債務 (Net Debt USD)", value=6000000000, step=100000000)
 
 # =========================
 # 3. 數據處理 (計算 mNAV)
@@ -100,17 +95,19 @@ if btc_base.empty or mstr_daily.empty:
     st.error("❌ 無法取得數據。請檢查 CoinGecko API 狀態或 yfinance 限制。")
     st.stop()
 
-# 為了計算最新 mNAV，將 BTC 轉為日線對齊
+# 將 BTC 轉為日線對齊 MSTR 收盤價
 btc_daily = btc_base.copy()
 btc_daily['date'] = btc_daily['date'].dt.normalize()
 btc_daily = btc_daily.groupby('date').last().reset_index()
 
+# 合併數據
 df_combined = pd.merge(
     btc_daily[['date', 'close']].rename(columns={'close': 'BTC_price'}),
     mstr_daily[['date', 'close']].rename(columns={'close': 'MSTR_price'}),
     on='date', how='inner'
 ).set_index('date')
 
+# 計算指標公式: (MSTR市值 + 淨債務) / BTC持倉總價值
 df_combined["market_cap"] = adj_shares * df_combined["MSTR_price"]
 df_combined["btc_value"] = adj_btc * df_combined["BTC_price"]
 df_combined["diluted_mNAV"] = (df_combined["market_cap"] + adj_net_debt) / df_combined["btc_value"]
@@ -119,21 +116,29 @@ df_combined["Premium_%"] = (df_combined["diluted_mNAV"] - 1) * 100
 latest = df_combined.iloc[-1]
 
 # =========================
-# 4. 主要 UI 配置
+# 4. 主要 Dashboard 配置
 # =========================
+
+# --- 關鍵指標摘要 (Metrics) ---
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("BTC Price (CG)", f"${latest['BTC_price']:,.0f}")
+m1.metric("BTC Price (CoinGecko)", f"${latest['BTC_price']:,.0f}")
 m2.metric("MSTR Price", f"${latest['MSTR_price']:.2f}")
 m3.metric("Diluted mNAV", f"{latest['diluted_mNAV']:.2f}x")
 m4.metric("Premium %", f"{latest['Premium_%']:.2f}%")
 
-# --- BTC K線圖 ---
-st.subheader("📊 Bitcoin 價格走勢 (CoinGecko)")
-selected_tf = st.segmented_control("時間尺度", ["小時 (3天)", "日 (3個月)", "週 (1年)"], default="日 (3個月)")
+st.divider()
 
-# CoinGecko 的 days 參數映射
+# --- BTC K線圖 (CoinGecko) ---
+st.subheader("📊 Bitcoin 價格走勢")
+selected_tf = st.segmented_control(
+    "選擇圖表尺度", 
+    ["小時 (3天)", "日 (3個月)", "週 (1年)"], 
+    default="日 (3個月)"
+)
+
+# 根據選擇呼叫不同天數的資料 (CoinGecko 會自動決定顆粒度)
 if selected_tf == "小時 (3天)":
-    k_df = fetch_btc_coingecko_ohlc(days="7") # 7天內會提供較細的顆粒度
+    k_df = fetch_btc_coingecko_ohlc(days="7") 
 elif selected_tf == "日 (3個月)":
     k_df = fetch_btc_coingecko_ohlc(days="90")
 else:
@@ -143,29 +148,45 @@ if not k_df.empty:
     fig_k = go.Figure(data=[go.Candlestick(
         x=k_df['date'], open=k_df['open'], high=k_df['high'], low=k_df['low'], close=k_df['close']
     )])
-    fig_k.update_layout(height=450, margin=dict(t=0, b=0), xaxis_rangeslider_visible=False, template="plotly_dark")
+    fig_k.update_layout(
+        height=500, 
+        margin=dict(t=0, b=0), 
+        xaxis_rangeslider_visible=False, 
+        template="plotly_dark"
+    )
     st.plotly_chart(fig_k, use_container_width=True)
 
-# --- mNAV 圖表 ---
-st.subheader("📈 mNAV 溢價歷史趨勢")
+# --- mNAV 歷史趨勢圖 ---
+st.subheader("📈 mNAV 溢價/折價歷史趨勢")
 fig_nav = make_subplots(specs=[[{"secondary_y": True}]])
-fig_nav.add_trace(go.Scatter(x=df_combined.index, y=df_combined["diluted_mNAV"], name="mNAV Ratio", line=dict(color="gold", width=2)), secondary_y=False)
-fig_nav.add_trace(go.Scatter(x=df_combined.index, y=df_combined["BTC_price"], name="BTC Price", line=dict(color="rgba(255,255,255,0.1)")), secondary_y=True)
-fig_nav.update_layout(height=400, template="plotly_dark", hovermode="x unified")
+# 主軸: mNAV 倍數
+fig_nav.add_trace(go.Scatter(
+    x=df_combined.index, y=df_combined["diluted_mNAV"], 
+    name="mNAV Ratio", line=dict(color="gold", width=3)
+), secondary_y=False)
+# 副軸: BTC 價格 (背景參考)
+fig_nav.add_trace(go.Scatter(
+    x=df_combined.index, y=df_combined["BTC_price"], 
+    name="BTC Price (Ref)", line=dict(color="rgba(255,255,255,0.15)")
+), secondary_y=True)
+
+fig_nav.update_layout(height=450, template="plotly_dark", hovermode="x unified")
+fig_nav.update_yaxes(title_text="mNAV Multiple", secondary_y=False)
+fig_nav.update_yaxes(title_text="BTC Price (USD)", secondary_y=True)
 st.plotly_chart(fig_nav, use_container_width=True)
 
-# --- AI 與 表格 ---
-col_ai, col_data = st.columns([1, 1])
-with col_ai:
-    st.subheader("🤖 AI 策略分析")
-    if st.button("啟動 AI 市場診斷"):
-        with st.spinner("Analyzing..."):
-            prompt = f"BTC: {latest['BTC_price']}, mNAV: {latest['diluted_mNAV']:.2f}. 分析溢價狀況。"
-            try:
-                response = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
-                st.info(response.choices[0].message.content)
-            except Exception as e: st.error(f"AI 呼叫失敗: {e}")
+# --- 詳細數據表格 ---
+st.subheader("📋 歷史詳細數據表")
+# 格式化顯示
+df_display = df_combined.copy().sort_index(ascending=False)
+df_display["BTC_price"] = df_display["BTC_price"].map("${:,.0f}".format)
+df_display["MSTR_price"] = df_display["MSTR_price"].map("${:,.2f}".format)
+df_display["diluted_mNAV"] = df_display["diluted_mNAV"].map("{:.2f}x".format)
+df_display["Premium_%"] = df_display["Premium_%"].map("{:.2f}%".format)
 
-with col_data:
-    st.subheader("📋 歷史數據摘要")
-    st.dataframe(df_combined.sort_index(ascending=False).head(20), use_container_width=True)
+st.dataframe(
+    df_display[['BTC_price', 'MSTR_price', 'diluted_mNAV', 'Premium_%']].head(50), 
+    use_container_width=True
+)
+
+st.caption(f"數據最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (每分鐘自動整理)")
