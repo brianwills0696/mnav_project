@@ -186,17 +186,6 @@ st.subheader("Premium / Discount (%)")
 st.line_chart(df_combined["Premium_%"])
 
 # =========================
-# 10. BTC vs MSTR normalized
-# =========================
-df_compare = df_combined[["BTC_price", "MSTR_price"]].dropna()
-
-df_compare["BTC_norm"] = df_compare["BTC_price"] / df_compare["BTC_price"].iloc[0] * 100
-df_compare["MSTR_norm"] = df_compare["MSTR_price"] / df_compare["MSTR_price"].iloc[0] * 100
-
-st.subheader("BTC vs MSTR (Normalized)")
-st.line_chart(df_compare[["BTC_norm", "MSTR_norm"]])
-
-# =========================
 # 10. BTC vs MSTR (雙 Y 軸)
 # =========================
 st.subheader("BTC vs MSTR Price (Dual Y-Axis)")
