@@ -164,7 +164,7 @@ fig_nav.add_trace(go.Scatter(
 ), secondary_y=False)
 fig_nav.add_trace(go.Scatter(
     x=df_combined.index, y=df_combined["BTC_price"], 
-    name="BTC Price", line=dict(color="rgba(255,255,255,0.15)")
+    name="BTC Price", line=dict(color="#9ac9EF")
 ), secondary_y=True)
 
 fig_nav.update_layout(height=450, template="plotly_dark", hovermode="x unified")
