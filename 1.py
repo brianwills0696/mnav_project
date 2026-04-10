@@ -78,11 +78,11 @@ def get_live_stats():
 st.title("🚀 MSTR Diluted mNAV Dashboard")
 live_stats = get_live_stats()
 
-with st.expander("🛠️ 核心計算參數調整", expanded=False):
+with st.expander("Core Parameter Change", expanded=False):
     c1, c2, c3 = st.columns(3)
-    adj_shares = c1.number_input("稀釋後總股數 (Shares)", value=live_stats["shares"], step=100000)
-    adj_btc = c2.number_input("BTC 總持倉 (BTC)", value=live_stats["btc_holdings"], step=100)
-    adj_net_debt = c3.number_input("估計淨債務 (Net Debt USD)", value=6000000000, step=100000000)
+    adj_shares = c1.number_input("Diluted Shares", value=live_stats["shares"], step=100000)
+    adj_btc = c2.number_input("BTC Holdings", value=live_stats["btc_holdings"], step=100)
+    adj_net_debt = c3.number_input("Net Debt USD", value=6000000000, step=100000000)
 
 # =========================
 # 3. 數據處理 (計算 mNAV)
@@ -129,17 +129,16 @@ m4.metric("Premium %", f"{latest['Premium_%']:.2f}%")
 st.divider()
 
 # --- BTC K線圖 (CoinGecko) ---
-st.subheader("📊 Bitcoin 價格走勢")
+st.subheader("Bitcoin Price Trend")
 selected_tf = st.segmented_control(
-    "選擇圖表尺度", 
-    ["小時 (3天)", "日 (3個月)", "週 (1年)"], 
-    default="日 (3個月)"
+    ["Hour", "Day", "Week"], 
+    default="Day"
 )
 
 # 根據選擇呼叫不同天數的資料 (CoinGecko 會自動決定顆粒度)
-if selected_tf == "小時 (3天)":
+if selected_tf == "Hour":
     k_df = fetch_btc_coingecko_ohlc(days="7") 
-elif selected_tf == "日 (3個月)":
+elif selected_tf == "Day":
     k_df = fetch_btc_coingecko_ohlc(days="90")
 else:
     k_df = fetch_btc_coingecko_ohlc(days="365")
@@ -157,7 +156,7 @@ if not k_df.empty:
     st.plotly_chart(fig_k, use_container_width=True)
 
 # --- mNAV 歷史趨勢圖 ---
-st.subheader("📈 mNAV 溢價/折價歷史趨勢")
+st.subheader("mNAV Premium/Discount Trend")
 fig_nav = make_subplots(specs=[[{"secondary_y": True}]])
 # 主軸: mNAV 倍數
 fig_nav.add_trace(go.Scatter(
@@ -176,7 +175,7 @@ fig_nav.update_yaxes(title_text="BTC Price (USD)", secondary_y=True)
 st.plotly_chart(fig_nav, use_container_width=True)
 
 # --- 詳細數據表格 ---
-st.subheader("📋 歷史詳細數據表")
+st.subheader("Historical Data")
 # 格式化顯示
 df_display = df_combined.copy().sort_index(ascending=False)
 df_display["BTC_price"] = df_display["BTC_price"].map("${:,.0f}".format)
@@ -189,4 +188,4 @@ st.dataframe(
     use_container_width=True
 )
 
-st.caption(f"數據最後更新時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (每分鐘自動整理)")
+st.caption(f"LastUpdate Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ")
